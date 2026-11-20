@@ -1,0 +1,16 @@
+{
+  "name": "claude-sticky",
+  "productName": "Claude Tasks",
+  "version": "1.0.0",
+  "description": "Desktop sticky note that shows running Claude Code tasks, their agents and time left",
+  "main": "main.js",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "demo": "electron . --demo",
+    "collect": "node collector.js"
+  },
+  "devDependencies": {
+    "electron": "^45.4.1"
+  }
+}
