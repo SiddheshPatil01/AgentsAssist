@@ -114,18 +114,53 @@ function createWindow() {
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
 
   if (SHOT) {
-    win.webContents.once('did-finish-load', () => {
-      setTimeout(async () => {
-        try {
-          fs.writeFileSync(SHOT, (await win.webContents.capturePage()).toPNG());
-          const page = await win.webContents.executeJavaScript(`(() => { const s = document.getElementById('sticky'); const c = getComputedStyle(s); const r = s.getBoundingClientRect(); return { innerWidth, innerHeight, dpr: devicePixelRatio, z: c.zoom, cssW: c.width, cssH: c.height, rectW: r.width, rectH: r.height, cls: s.className }; })()`);
-          console.log('SHOT ' + JSON.stringify({ bounds: win.getBounds(), winSize, zoom: zoom(), h: settings.h, page }));
-        } catch (e) { console.error(String(e)); }
-        app.quit();
-      }, Number(argValue('delay')) || 4000);
-      if (argValue('resize')) setTimeout(() => applySize(Number(argValue('resize')), Number(argValue('rh')) || null), 1500);
-    });
+    // invisible and click-through while pictures are taken, so it never gets in the way on screen
+    win.setOpacity(0);
+    win.webContents.once('did-finish-load', () => runShot().catch((e) => console.error(String(e))).finally(() => app.quit()));
   }
+}
+
+/*
+ * Picture helper, used for the images in the README. `--shot=<file.png>` saves the note and quits.
+ *   --demo --t=12          sample data frozen at second 12 of its 56 second loop
+ *   --demo --at=37         sample data running: take the picture at that second of the loop
+ *   --frames=48 --fps=8    save a numbered series (file-000.png ...) of the whole window, for an animation
+ *   --preview              a wallpaper behind the note instead of a see-through background
+ */
+async function runShot() {
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  if (argValue('at')) {
+    const loop = 56000;
+    let wait = (Number(argValue('at')) * 1000 - (Date.now() % loop) + loop) % loop;
+    if (wait < 4000) wait += loop;      // the page must first see the task running, or nothing "finishes"
+    await sleep(wait);
+  } else {
+    await sleep(Number(argValue('delay')) || 4000);
+  }
+
+  const frames = Number(argValue('frames')) || 0;
+  if (frames) {
+    // Frames are kept in memory and written afterwards: saving inside the loop is too slow to keep the pace.
+    const gap = 1000 / (Number(argValue('fps')) || 8);
+    const shots = [];
+    const zero = Date.now();
+    for (let i = 0; i < frames; i++) {
+      const started = Date.now();
+      shots.push({ at: started - zero, image: (await win.webContents.capturePage()).resize({ width: Number(argValue('width')) || 432 }) });
+      await sleep(Math.max(0, gap - (Date.now() - started)));
+    }
+    shots.forEach((shot, i) => fs.writeFileSync(SHOT.replace(/\.png$/i, `-${String(i).padStart(3, '0')}.png`), shot.image.toPNG()));
+    fs.writeFileSync(SHOT.replace(/\.png$/i, '-times.json'), JSON.stringify(shots.map((shot) => shot.at)));
+    return;
+  }
+
+  // one picture, cut to the note plus room for its shadow
+  const r = await win.webContents.executeJavaScript(`(() => { const r = document.getElementById('sticky').getBoundingClientRect(); return { x: r.left, y: r.top, width: r.width, height: r.height }; })()`);
+  const size = win.getContentBounds();
+  const x = Math.max(0, Math.floor(r.x - 22));
+  const y = Math.max(0, Math.floor(r.y - 10));
+  const rect = { x, y, width: Math.min(size.width - x, Math.ceil(r.width + 44)), height: Math.min(size.height - y, Math.ceil(r.height + 46)) };
+  fs.writeFileSync(SHOT, (await win.webContents.capturePage(rect)).toPNG());
 }
 
 // Sizes are sent in screen units; the page divides by the scale itself.
@@ -340,7 +375,7 @@ function wireIpc() {
     if (lastSnap) send('snapshot', lastSnap);
   });
   ipcMain.on('ignore-mouse', (_e, ignore) => {
-    if (win && !dragTimer) win.setIgnoreMouseEvents(!!ignore, { forward: true });
+    if (win && !dragTimer && !SHOT) win.setIgnoreMouseEvents(!!ignore, { forward: true });
   });
   ipcMain.on('drag-start', () => {
     if (!win) return;
